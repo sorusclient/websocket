@@ -1,0 +1,6 @@
+.gradle
+.idea
+build
+run
+!run/gitkeep
+out
