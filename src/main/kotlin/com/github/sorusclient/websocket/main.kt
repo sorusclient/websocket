@@ -49,9 +49,11 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
 
                 val response = client.get<String>("https://sessionserver.mojang.com/session/minecraft/hasJoined?username=${json.get("username")}&serverId=$sorusMlHash")
 
-                if (response.isNotEmpty() || true) {
+                if (response.isNotEmpty() || System.getProperty("sorus.websocket.disableauth") == "true") {
                     val user = User(webSocketServerSession, json.getString("uuid"))
                     addUser(user)
+
+                    sendMessage(webSocketServerSession, "connected")
                 } else {
                     webSocketServerSession.close()
                 }
@@ -112,14 +114,15 @@ private fun addUser(user: User) {
     uuidToUser[user.uuid] = user
 }
 
-private suspend fun sendMessage(socket: WebSocketServerSession, id: String, json: JSONObject) {
+private suspend fun sendMessage(socket: WebSocketServerSession, id: String, json: JSONObject = JSONObject()) {
     socket.send("$id $json")
 }
 
 private fun onDisconnect(webSocketServerSession: WebSocketServerSession) {
-    val user = users.remove(webSocketServerSession)!!
-    user.ownedGroup?.let { disbandGroup(it) }
-    uuidToUser.remove(user.uuid)
+    val user = users.remove(webSocketServerSession)?.let { user ->
+        user.ownedGroup?.let { disbandGroup(it) }
+        uuidToUser.remove(user.uuid)
+    }
 }
 
 private fun disbandGroup(group: Group) {
