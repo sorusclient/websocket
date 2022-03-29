@@ -127,7 +127,7 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
             val group = user.ownedGroup!!
 
             for (member in group.members) {
-                if (member == user) continue
+                if (member.uuid == user.uuid) continue
 
                 sendMessage(member.socket!!, "groupWarp", JSONObject().apply {
                     put("ip", json.getString("ip"))
@@ -180,6 +180,19 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
                         put("action", action)
                     })
                 }
+            }
+        }
+        "unfriend" -> {
+            val user = users[webSocketServerSession]!!
+            val removedFriend = uuidToUser[json.getString("user")]!!
+
+            user.friends.remove(removedFriend)
+            removedFriend.friends.remove(user)
+
+            if (removedFriend.socket != null) {
+                sendMessage(removedFriend.socket!!, "removeFriend", JSONObject().apply {
+                    put("user", user.uuid)
+                })
             }
         }
     }
