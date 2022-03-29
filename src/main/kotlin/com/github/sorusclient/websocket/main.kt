@@ -9,7 +9,11 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.runBlocking
+import org.apache.commons.io.FileUtils
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.nio.charset.StandardCharsets
 
 fun main() {
     embeddedServer(Netty, port = 8080) { main() }.start(wait = true)
@@ -20,7 +24,18 @@ private val uuidToUser: MutableMap<String, User> = HashMap()
 
 private val groups: MutableList<Group> = ArrayList()
 
+//owner to invitees
+private val groupInvites: MutableMap<User, MutableList<User>> = HashMap()
+
+//user to people sending requests
+private val friendRequests: MutableMap<User, MutableList<User>> = HashMap()
+
+private val dataFile = File("data")
+private val usersFile = File(dataFile, "users")
+
 fun Application.main() {
+    usersFile.mkdirs()
+
     install(WebSockets)
     routing {
         webSocket("/") {
@@ -50,10 +65,18 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
                 val response = client.get<String>("https://sessionserver.mojang.com/session/minecraft/hasJoined?username=${json.get("username")}&serverId=$sorusMlHash")
 
                 if (response.isNotEmpty() || System.getProperty("sorus.websocket.disableauth") == "true") {
-                    val user = User(webSocketServerSession, json.getString("uuid"))
-                    addUser(user)
+                    val user = createGetUser(json.getString("uuid"), webSocketServerSession)
 
                     sendMessage(webSocketServerSession, "connected")
+
+                    for (friend in user.friends) {
+                        sendMessage(webSocketServerSession, "addFriend", JSONObject().apply {
+                            put("user", friend.uuid)
+                        })
+                        if (friend.socket != null) {
+                            sendMessage(friend.socket!!, "requestUpdateStatus", JSONObject())
+                        }
+                    }
                 } else {
                     webSocketServerSession.close()
                 }
@@ -73,26 +96,31 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
             if (invitee != null) {
                 val jsonObject = JSONObject()
                 jsonObject.put("inviter", user.uuid)
-                sendMessage(invitee.socket, "acceptGroup", jsonObject)
+                groupInvites.computeIfAbsent(user) { ArrayList() }.add(invitee)
+                sendMessage(invitee.socket!!, "acceptGroup", jsonObject)
             }
         }
         "acceptGroup" -> {
             val user = users[webSocketServerSession]!!
             val inviter = uuidToUser[json.getString("inviter")]!!
 
-            for (groupMember in inviter.ownedGroup!!.members) {
-                sendMessage(groupMember.socket, "addUserToGroup", JSONObject().apply {
-                    put("user", user.uuid)
-                })
-            }
+            if (groupInvites[inviter] != null && groupInvites[inviter]!!.contains(user)) {
+                groupInvites[inviter]!!.remove(user)
 
-            for (groupMember in inviter.ownedGroup!!.members) {
-                sendMessage(user.socket, "addUserToGroup", JSONObject().apply {
-                    put("user", groupMember.uuid)
-                })
-            }
+                for (groupMember in inviter.ownedGroup!!.members) {
+                    sendMessage(groupMember.socket!!, "addUserToGroup", JSONObject().apply {
+                        put("user", user.uuid)
+                    })
+                }
 
-            inviter.ownedGroup!!.members.add(user)
+                for (groupMember in inviter.ownedGroup!!.members) {
+                    sendMessage(user.socket!!, "addUserToGroup", JSONObject().apply {
+                        put("user", groupMember.uuid)
+                    })
+                }
+
+                inviter.ownedGroup!!.members.add(user)
+            }
         }
         "groupWarp" -> {
             val user = users[webSocketServerSession]!!
@@ -101,30 +129,146 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
             for (member in group.members) {
                 if (member == user) continue
 
-                sendMessage(member.socket, "groupWarp", JSONObject().apply {
+                sendMessage(member.socket!!, "groupWarp", JSONObject().apply {
                     put("ip", json.getString("ip"))
                 })
+            }
+        }
+        "sendFriend" -> {
+            val user = users[webSocketServerSession]!!
+            val wantedFriend = uuidToUser[json.getString("user")]
+
+            if (wantedFriend != null) {
+                friendRequests.computeIfAbsent(wantedFriend) { ArrayList() }.add(user)
+                sendMessage(wantedFriend.socket!!, "friendRequest", JSONObject().apply {
+                    put("user", user.uuid)
+                })
+            }
+        }
+        "acceptFriend" -> {
+            val user = users[webSocketServerSession]!!
+            val friender = uuidToUser[json.getString("user")]!!
+
+            if (friendRequests[user] != null && friendRequests[user]!!.contains(friender)) {
+                friendRequests[user]!!.remove(friender)
+
+                user.friends.add(friender)
+                friender.friends.add(user)
+
+                saveUserToFile(user)
+                saveUserToFile(friender)
+
+                sendMessage(friender.socket!!, "addFriend", JSONObject().apply {
+                    put("user", user.uuid)
+                })
+
+                sendMessage(friender.socket!!, "requestUpdateStatus", JSONObject())
+                sendMessage(user.socket!!, "requestUpdateStatus", JSONObject())
+            }
+        }
+        "updateStatus" -> {
+            val user = users[webSocketServerSession]!!
+
+            val version = json.getString("version")
+            val action = json.getString("action")
+
+            for (friend in user.friends) {
+                if (friend.socket != null) {
+                    sendMessage(friend.socket!!, "updateStatus", JSONObject().apply {
+                        put("user", user.uuid)
+                        put("version", version)
+                        put("action", action)
+                    })
+                }
             }
         }
     }
 }
 
-private fun addUser(user: User) {
-    users[user.socket] = user
-    uuidToUser[user.uuid] = user
-}
-
 private suspend fun sendMessage(socket: WebSocketServerSession, id: String, json: JSONObject = JSONObject()) {
+    println("${users[socket]!!.uuid} $id $json")
     socket.send("$id $json")
 }
 
 private fun onDisconnect(webSocketServerSession: WebSocketServerSession) {
-    val user = users.remove(webSocketServerSession)?.let { user ->
+    runBlocking {
+        onReceiveMessage(webSocketServerSession, "updateStatus", JSONObject().apply {
+            put("version", "")
+            put("action", "offline")
+        })
+    }
+    users.remove(webSocketServerSession)?.let { user ->
         user.ownedGroup?.let { disbandGroup(it) }
-        uuidToUser.remove(user.uuid)
+        user.socket = null
     }
 }
 
 private fun disbandGroup(group: Group) {
     groups.remove(group)
+}
+
+private fun saveUserToFile(user: User) {
+    val file = File(usersFile, "${user.uuid}.json")
+    val json = JSONObject().apply {
+        put("friends", JSONArray()
+            .apply {
+                for (friend in user.friends) {
+                    put(friend.uuid)
+                }
+            })
+    }
+
+    FileUtils.writeStringToFile(file, json.toString(2), StandardCharsets.UTF_8)
+}
+
+private fun createGetUser(uuid: String, socket: WebSocketServerSession? = null): User {
+    var userMain: User? = null
+    for (user in users) {
+        if (user.value.uuid == uuid) {
+            userMain = user.value
+            uuidToUser[uuid] = user.value
+            break
+        }
+    }
+
+    if (userMain == null) {
+        for (user in uuidToUser) {
+            if (user.key == uuid) {
+                userMain = user.value
+                break
+            }
+        }
+
+        if (userMain == null) {
+            userMain = User(socket, uuid, friends = ArrayList())
+            uuidToUser[uuid] = userMain
+
+            if (socket != null) {
+                users[socket] = userMain
+            }
+
+            loadUserFromFile(userMain)
+        }
+    }
+
+    if (socket != null) {
+        users[socket] = userMain
+        userMain.socket = socket
+    }
+
+    return userMain
+}
+
+private fun loadUserFromFile(user: User) {
+    val file = File(usersFile, "${user.uuid}.json")
+    if (!file.exists()) return
+
+    val json = JSONObject(FileUtils.readFileToString(file, StandardCharsets.UTF_8))
+
+    if (json.has("friends")) {
+        val friends = json.getJSONArray("friends")
+        for (friend in friends) {
+            user.friends.add(createGetUser(friend.toString()))
+        }
+    }
 }
