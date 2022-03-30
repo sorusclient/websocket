@@ -87,6 +87,7 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
             val group = Group(user)
             groups.add(group)
             user.ownedGroup = group
+            user.group = group
             group.members.add(user)
         }
         "inviteToGroup" -> {
@@ -120,6 +121,7 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
                 }
 
                 inviter.ownedGroup!!.members.add(user)
+                user.group = inviter.ownedGroup!!
             }
         }
         "groupWarp" -> {
@@ -195,6 +197,30 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
                 })
             }
         }
+        "disbandGroup" -> {
+            val user = users[webSocketServerSession]!!
+            for (member in user.ownedGroup!!.members) {
+                sendMessage(member.socket!!, "leaveGroup")
+                member.group = null
+            }
+
+            groups.remove(user.ownedGroup)
+            user.ownedGroup = null
+        }
+        "removeGroupMember" -> {
+            val user = users[webSocketServerSession]!!
+            val removedMember = uuidToUser[json.getString("user")]
+
+            user.group!!.members.remove(removedMember)
+            removedMember!!.group = null
+            sendMessage(removedMember.socket!!, "leaveGroup")
+
+            for (member in user.group!!.members) {
+                sendMessage(member.socket!!, "removeGroupMember", JSONObject().apply {
+                    put("user", json.getString("user"))
+                })
+            }
+        }
     }
 }
 
@@ -213,6 +239,10 @@ private fun onDisconnect(webSocketServerSession: WebSocketServerSession) {
     users.remove(webSocketServerSession)?.let { user ->
         user.ownedGroup?.let { disbandGroup(it) }
         user.socket = null
+        if (user.group != null) {
+            user.group!!.members.remove(user)
+            user.group = null
+        }
     }
 }
 
