@@ -1,5 +1,6 @@
 plugins {
     id("org.jetbrains.kotlin.jvm") version "1.6.10"
+    id("com.github.johnrengelman.shadow") version "7.1.2"
 }
 
 repositories {
@@ -14,4 +15,12 @@ dependencies {
     implementation("org.json:json:20220320")
     implementation("io.ktor:ktor-client-cio:1.6.8")
     implementation("commons-io:commons-io:2.11.0")
+}
+
+tasks.withType(org.gradle.jvm.tasks.Jar::class.java) {
+    manifest {
+        attributes(
+            "Main-Class" to "com.github.sorusclient.websocket.MainKt"
+        )
+    }
 }
