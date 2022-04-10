@@ -228,6 +228,16 @@ private suspend fun onReceiveMessage(webSocketServerSession: WebSocketServerSess
                 })
             }
         }
+        "updateInGameStatus" -> {
+            val user = users[webSocketServerSession]!!
+            val receiver = uuidToUser[json.getString("user")]
+
+            if (receiver != null) {
+                sendMessage(receiver.socket!!, "updateInGameStatus", JSONObject().apply {
+                    put("user", user.uuid)
+                })
+            }
+        }
     }
 }
 
