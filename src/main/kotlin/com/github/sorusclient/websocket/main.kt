@@ -23,7 +23,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 
 fun main() {
-    embeddedServer(Netty, port = 8080) { main() }.start(wait = true)
+    embeddedServer(Netty, port = 3000) { main() }.start(wait = true)
 }
 
 private val users: MutableMap<WebSocketServerSession, User> = HashMap()
